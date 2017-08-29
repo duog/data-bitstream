@@ -1,5 +1,5 @@
 {-# OPTIONS_GHC -Wno-name-shadowing -Wno-orphans #-}
-{-# LANGUAGE OverloadedStrings, BinaryLiterals, FlexibleInstances #-}
+{-# LANGUAGE OverloadedStrings, BinaryLiterals, FlexibleInstances, RecursiveDo #-}
 
 module BitstreamSpec where
 
@@ -7,11 +7,16 @@ import Prelude hiding (words)
 
 import Test.Tasty.Hspec
 
-import Data.Bitstream hiding (words)
+import Data.Bitstream
+import Data.ToBits
 
 import Data.Bits (zeroBits, setBit)
 import Data.String (IsString(..))
 import Data.Word (Word8)
+
+import Data.BitCode.LLVM
+import Data.BitCode.LLVM.ToBitCode (ToNBitCode(..))
+import Data.BitCode.LLVM.Codes.Identification (Epoch(..))
 
 -- | Helper function for the IsString instances
 bit :: Int -> Char -> Word8 -> Word8
@@ -102,8 +107,8 @@ spec_helper = do
       ls "1" `shouldBe` (S [] (Buff (1,0b00000001)) 1)
       ls "10101010 101" `shouldBe` (S [0b01010101] (Buff (3, 0b00000101)) 11)
 
-spec_stream :: Spec
-spec_stream = do
+spec_buff :: Spec
+spec_buff = do
   describe "Buff" $ do
     it "should add" $ do
       nullBuff `addBuff` nullBuff
@@ -117,7 +122,10 @@ spec_stream = do
       (Buff (6,0b00010101)) `addBuff` (Buff (4,0b00001010))
         `shouldBe` (Just 0b10010101, (Buff (2,0b00000010)))
       (Buff (6,0b00010101)) `addBuff` (Buff (7,0b01010101))
-        `shouldBe` (Just 0b01010101, (Buff (5,0b00010101))) 
+        `shouldBe` (Just 0b01010101, (Buff (5,0b00010101)))
+
+spec_stream :: Spec
+spec_stream = do
   describe "Stream" $ do
     it "should be a monoid" $ do
       (S []  nullBuff 0 `mappend` S []  (Buff (4,0b10100000)) 4)
@@ -143,6 +151,8 @@ spec_stream = do
       (S [0b10101010] (Buff (3,0b00000101)) 11) `mappend` (S [0b01010101, 0b00110011] (Buff (6,0b00111000)) 22)
         `shouldBe` (S [0b10101010,0b10101101,0b10011010,0b11000001] (Buff (1,0b00000001)) 33)
 
+spec_bitstream :: Spec
+spec_bitstream = do
   describe "Bitstream" $ do
     it "should track location" $ do
       evalBitstream 0 (loc) `shouldBe` 0
@@ -178,7 +188,8 @@ spec_stream = do
       execBitstream 0 (emitVBR 3 3) `shouldBe` (words "11000000")
       execBitstream 0 (emitVBR 3 4) `shouldBe` (words "00110000")
       execBitstream 0 (emitVBR 3 5) `shouldBe` (words "10110000")
-      -- execBitstream 0 (emitVBR 3 9) `shouldBe` (words "10101000")
+      execBitstream 0 (emitVBR 3 9) `shouldBe` (words "10101000")
+      
       execBitstream 0 (emitVBR 4  0) `shouldBe` (words "00000000")
       execBitstream 0 (emitVBR 4  1) `shouldBe` (words "10000000")
       execBitstream 0 (emitVBR 4  2) `shouldBe` (words "01000000")
@@ -188,5 +199,93 @@ spec_stream = do
       execBitstream 0 (emitVBR 4 32) `shouldBe` (words "00010010")
       execBitstream 0 (emitVBR 4 64) `shouldBe` (words "00010001 10000000")
 
-    xit "should be able to emit char6 encoded data" $ do
-      True `shouldBe` False
+    it "should be able to emit char6 encoded data" $ do
+      execBitstream 0 (mapM emitChar6 ("abcd" :: String))
+        `shouldBe` (words "000000 100000 010000 110000")
+
+    it "handle withOffset" $ do
+      True `shouldBe` True
+      let action :: Bitstream ()
+          action = mdo
+            emitWord32 n
+            n <- withOffset 0 $ do
+              emitWord32 0
+              emitWord32 0xffffffff
+              emitWord32 0
+              emitWord32 0xff00ff00
+              locWords -- should be two now.
+            emitWord8 3
+            pure ()
+      execBitstream 0 action `shouldBe`
+        [ 0x04, 0x00, 0x00, 0x00  -- four words
+        , 0x00, 0x00, 0x00, 0x00  -- word 1
+        , 0xff, 0xff, 0xff, 0xff  -- word 2
+        , 0x00, 0x00, 0x00, 0x00  -- word 3
+        , 0x00, 0xff, 0x00, 0xff  -- word 4
+        , 0x03 ]
+
+    it "should align to word32" $ do
+      execBitstream 0 (emitFixed 6 1 >> alignWord32)
+        `shouldBe` (words "1000 0000 0000 0000 0000 0000 0000 0000")
+      execBitstream 0 (emitFixed 6 1 >> emitFixed 6 1 >> alignWord32)
+        `shouldBe` (words "1000 0010 0000 0000 0000 0000 0000 0000")
+      execBitstream 0 (emitWord32 0 >> alignWord32)
+        `shouldBe` [0x00,0x00,0x00,0x00]
+
+spec_bitcode :: Spec
+spec_bitcode = do
+  describe "bitcode serializer" $ do
+    it "should emit a simple empy block" $ do
+      -- emit a block with id 1, and no body.
+      let action = emitTopLevel [Block 1 3 []]
+          result = execBitstream 0 (action)
+      result `shouldBe`
+        (words $ "10 10000000 1100"   -- enter block (1), block id (1), len (3)
+              ++                  "00 0000 0000 0000 0000" -- align 32 bits
+              ++ "1000 0000 0000 0000 0000 0000 0000 0000" -- body contains 1 word
+              ++ "000"                -- end block (0)
+              ++    "0 0000 0000 0000 0000 0000 0000 0000" -- align 32 bits
+        )
+ 
+    it "should serialize an ident block" $ do
+      let bc = map denormalize $ toBitCode (Ident "LLVM" Current)
+          result = execBitstream 0 (emitTopLevel bc)
+      result `shouldBe`
+        (words $ "10 10110000 0100" -- block: 13, len: 2           2+8+4 = 14
+              ++                  "00 0000 0000 0000 0000"   --    2+4*4 = 18
+              ++ "1100 0000 0000 0000 0000 0000 0000 0000"   -- body contains 3 words
+              ++ "11 100000 001000" -- unabbrev record: 1, 4 ops   2+6+6 = 14
+              ++ "001101010000"     -- vbr:6 ('L')                       = 12
+              ++ "001101010000"     -- vbr:6 ('L')                       = 12
+              ++ "011011010000"     -- vbr:6 ('V')                       = 12
+              ++ "101101010000"     -- vbr:6 ('M')                       = 12
+              ++ "11 010000 100000" -- unabbrev record: 2, 1 op    2+6+6 = 14
+              ++ "000000"           -- vbr:6 (0)                         =  6
+              ++ "00"               -- end block (0)                     =  2
+                                    --                               sum = 84 = 2 * 32 + 20
+              ++ "0000 0000 0000"   -- align to word boundary.
+        )
+    it "should serialize an empty module" $ do
+      let bc = toBitCode (Just (Ident "LLVM" Current), Module { mVersion = 1
+                                                              , mTriple = Nothing
+                                                              , mDatalayout = Nothing
+                                                              , mValues = []
+                                                              , mDecls = []
+                                                              , mDefns = []
+                                                              , mFns = []
+                                                              , mConsts = []
+                                                              , mTypes = []})
+          bc' = map denormalize bc
+          result = execBitstream 0 (emitTopLevel bc')
+      result `shouldBe`
+        [ 0x35, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00
+        , 0x07, 0x04, 0x2b, 0xb0, 0x82, 0x2d, 0xb4, 0xc2
+        , 0x42, 0x00, 0x00, 0x00, 0x21, 0x14, 0x00, 0x00
+        , 0x08, 0x00, 0x00, 0x00, 0x23, 0x08, 0x82, 0x10
+        , 0x21, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00
+        , 0x07, 0x01, 0x00, 0x00, 0xc1, 0x41, 0x00, 0x00
+        , 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        , 0x00, 0x00, 0x00, 0x00
+        ]
+
+        

@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fprof-auto #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving, StandaloneDeriving, KindSignatures, BinaryLiterals, RecursiveDo, LambdaCase #-}
 module Data.Bitstream where
 
@@ -14,6 +15,8 @@ import Control.Applicative (liftA2)
 import Control.Monad.Fix
 
 import Debug.Trace
+
+import GHC.Stack (HasCallStack)
 
 -- | The position in the stream. 
 type Position = Int
@@ -68,9 +71,9 @@ mkBuff n w = Buff (n, mask n w)
 
 -- | A stream is a number of Words, a buffer and a position (length of the stream) marker.
 data Stream f a = S
-  { words  :: f Word8
-  , buffer :: Buff
-  , len    :: Position
+  { _words  :: f Word8
+  , _buffer :: Buff
+  , _len    :: Position
   }
 
 deriving instance Eq (f Word8) => Eq (Stream f a)
@@ -117,7 +120,7 @@ value (_,_,v) = v
 runBitstream :: Position -> Bitstream a -> (ListStream, Position, a)
 runBitstream p (Bitstream f) = f p
 execBitstream :: Position -> Bitstream a -> [Word8]
-execBitstream p a = words . stream . runBitstream p $ a >> alignWord8
+execBitstream p a = _words . stream . runBitstream p $ a >> alignWord8
 evalBitstream :: Position -> Bitstream a -> a
 evalBitstream p = value . runBitstream p
 
@@ -159,15 +162,20 @@ withOffset n x = Bitstream $ \pos -> let
 loc :: Bitstream Position
 loc = Bitstream $ \pos -> (mempty, pos, pos)
 
-bytes :: Bitstream Word32
-bytes = Bitstream $ \pos -> (S mempty nullBuff pos, pos, fromIntegral $ pos `div` 8)
+locBytes :: Bitstream Word32
+locBytes = Bitstream $ \pos -> (S mempty nullBuff pos, pos, fromIntegral $ pos `div` 8)
+
+locWords :: Bitstream Word32
+locWords = Bitstream $ \pos -> (S mempty nullBuff pos, pos, fromIntegral $ pos `div` 32)
 
 emitBit :: Bool -> Bitstream ()
 emitBit True  = Bitstream $ \pos -> (S mempty (Buff (1, 0b00000001)) 1, pos+1, ())
 emitBit False = Bitstream $ \pos -> (S mempty (Buff (1, 0b00000000)) 1, pos+1, ())
 
 emitBits :: Int -> Word8 -> Bitstream ()
-emitBits n b = Bitstream $ \pos -> (S mempty (mkBuff n b) n, pos+n, ())
+emitBits 0 _ = pure ()
+emitBits n b | n < 8 = Bitstream $ \pos -> (S mempty (mkBuff n b) n, pos+n, ())
+             | otherwise = error $ "cannot emit " ++ show n ++ " bits from Word8."
 
 emitWord8 :: Word8 -> Bitstream ()
 emitWord8 w = Bitstream $ \pos -> (S [w] nullBuff 8, pos+8, ())
@@ -183,48 +191,52 @@ emitWord32 w = Bitstream $ \pos -> (S [fromIntegral (shift w  (-0))
                                       ,fromIntegral (shift w (-16))
                                       ,fromIntegral (shift w (-24))] nullBuff 32, pos+32, ())
 
-emitFixed :: Int -> Word64 -> Bitstream ()
-emitFixed n w | n < 8  = Bitstream $ \pos -> (S mempty     (mkBuff  n     (off  0 w)) n, pos+n, ())
-              | n < 16 = Bitstream $ \pos -> (S [off  0 w] (mkBuff (n-8)  (off  8 w)) n, pos+n, ())
+emitFixed :: Word64 -> Word64 -> Bitstream ()
+emitFixed 0 _ = pure ()
+emitFixed n w | n < 8  = Bitstream $ \pos -> (S mempty     (mkBuff  n'     (off  0 w)) n', pos+n', ())
+              | n < 16 = Bitstream $ \pos -> (S [off  0 w] (mkBuff (n'-8)  (off  8 w)) n', pos+n', ())
               | n < 24 = Bitstream $ \pos -> (S [off  0 w
-                                                ,off  8 w] (mkBuff (n-16) (off 16 w)) n, pos+n, ())
+                                                ,off  8 w] (mkBuff (n'-16) (off 16 w)) n', pos+n', ())
               | n < 32 = Bitstream $ \pos -> (S [off  0 w
                                                 ,off  8 w
-                                                ,off 16 w] (mkBuff (n-24) (off 24 w)) n, pos+n, ())
+                                                ,off 16 w] (mkBuff (n'-24) (off 24 w)) n', pos+n', ())
               | n < 40 = Bitstream $ \pos -> (S [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w
-                                                ,off 24 w] (mkBuff (n-32) (off 32 w)) n, pos+n, ())
+                                                ,off 24 w] (mkBuff (n'-32) (off 32 w)) n', pos+n', ())
               | n < 48 = Bitstream $ \pos -> (S [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w
                                                 ,off 24 w
-                                                ,off 32 w] (mkBuff (n-40) (off 40 w)) n, pos+n, ())
+                                                ,off 32 w] (mkBuff (n'-40) (off 40 w)) n', pos+n', ())
               | n < 56 = Bitstream $ \pos -> (S [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w
                                                 ,off 24 w
                                                 ,off 32 w
-                                                ,off 40 w] (mkBuff (n-48) (off 48 w)) n, pos+n, ())
+                                                ,off 40 w] (mkBuff (n'-48) (off 48 w)) n', pos+n', ())
               | n < 64 = Bitstream $ \pos -> (S [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w
                                                 ,off 24 w
                                                 ,off 32 w
                                                 ,off 40 w
-                                                ,off 48 w] (mkBuff (n-56) (off 56 w)) n, pos+n, ())
+                                                ,off 48 w] (mkBuff (n'-56) (off 56 w)) n', pos+n', ())
               | n == 64 = Bitstream $ \pos -> (S [ off  0 w, off  8 w, off 16 w, off 24 w
                                                  , off 32 w, off 40 w, off 48 w, off 56 w]
                                                nullBuff
-                                               64, pos+n, ())
+                                               64, pos+n', ())
               | otherwise = error $ "invalid number of bits. Cannot emit " ++ show n ++ " bits from Word64."
     where off :: Int -> Word64 -> Word8
           off n w = fromIntegral (shift w (-n))
+          n' = fromIntegral n
 
-emitVBR :: Int -> Word64 -> Bitstream ()
+emitVBR :: HasCallStack => Word64 -> Word64 -> Bitstream ()
+-- emitVBR 0 _ = pure ()
+emitVBR n _ | n < 2 = error "emitting VBR 0 impossible."
 emitVBR n w = do
   emitFixed (n-1) w
-  let tail = shift w (-n+1)
+  let tail = shift w (1-(fromIntegral n))
     in if popCount tail == 0
        then emitBit False
        else emitBit True >> emitVBR n tail
@@ -245,18 +257,23 @@ alignWord8 = flip mod 8 <$> loc >>= \case
 alignWord32 :: Bitstream ()
 alignWord32 = flip mod 32 <$> loc >>= \case
   0 -> pure ()
-  x -> emitBits (32 - x) 0
+  x | 32 - x < 8  -> emitBits (32 - x) 0
+  x | 32 - x < 16 -> emitWord8 0 >> emitBits (24 - x) 0
+  x | 32 - x < 24 -> emitWord8 0 >> emitWord8 0 >> emitBits (16 - x) 0
+  x | 32 - x < 32 -> emitWord8 0 >> emitWord8 0 >> emitWord8 0 >> emitBits (8 - x) 0
 
-writeFile :: FilePath -> Bitstream a -> IO ()
+writeFile
+  :: HasCallStack
+  => FilePath -> Bitstream a -> IO ()
 writeFile f = B.writeFile f . B.pack . execBitstream 0 
-
 
 -- * BitCode Header
 -- | put the BitCodeHeader, on darwin a special wrapper is
 -- apparently only required, to make it compatible with
 -- the system archiver.
 withHeader
-  :: Bool    -- ^ wrap in darwin header
+  :: HasCallStack
+  => Bool    -- ^ wrap in darwin header
   -> Bitstream () -- ^ body bitcode
   -> Bitstream ()
 withHeader isDarwin body = mdo
@@ -271,7 +288,7 @@ withHeader isDarwin body = mdo
     emitLLVMIRHeader
     body
     alignWord32
-    bytes -- get the number of bytes emitted.
+    locBytes -- get the number of bytes emitted.
 
   return ()
   where emitDarwinHeader
@@ -296,7 +313,7 @@ withHeader isDarwin body = mdo
 -- Show instances. These make parsing debug output much easier.
 
 showWord8 :: Word8 -> String
-showWord8 w = '0':'b':(map f $ reverse [testBit w i | i <- [0..7]])
+showWord8 w = '0':'b':(map f $ [testBit w i | i <- [0..7]])
   where f True  = '1'
         f False = '0'
 
