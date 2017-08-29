@@ -3,64 +3,81 @@
 
 module BitstreamSpec where
 
+import Prelude hiding (words)
+
 import Test.Tasty.Hspec
 
-import Data.Bitstream
+import Data.Bitstream hiding (words)
 
 import Data.Bits (zeroBits, setBit)
 import Data.String (IsString(..))
 import Data.Word (Word8)
 
+-- | Helper function for the IsString instances
+bit :: Int -> Char -> Word8 -> Word8
+bit n '1' = flip setBit n
+bit _ '0' = id
+bit _  b  = error $ "bit must be 0 or 1; " ++ b:" given."  
+
+isBinary :: String -> Bool
+isBinary = all (flip elem ['0','1'])
 
 instance IsString Buff where
-  fromString s | length s > 8                        = error $ "cannot create buffer from " ++ s ++ "; more than eight bits"
-               | not . all (flip elem ['0','1']) $ s = error $ "cannot create buffer from " ++ s ++ "; elements must be 0 or 1"
-               | otherwise                           = Buff (length s, foldl f zeroBits (indexed s))
+  fromString s | length s > 8       = error $ "cannot create buffer from " ++ s ++ "; more than eight bits"
+               | not . isBinary $ s = error $ "cannot create buffer from " ++ s ++ "; elements must be 0 or 1"
+               | otherwise          = Buff (length s, foldl f zeroBits (indexed s))
     where indexed :: [a] -> [(Int, a)]
           indexed = zip [0..]
           f :: Word8 -> (Int, Char) -> Word8
           f w (n, '1') = setBit w n
           f w _        = w
 
-b :: String -> Buff
-b = fromString
 
 instance IsString Word8 where
-  fromString s | length s /= 8                        = error $ "cannot create Word8 from " ++ s ++ "; must be 8 bits"
-               | not . all (flip elem ['0', '1']) $ s = error $ "cannot create Word8 from " ++ s ++ "; elements must be 0 or 1"
-               | otherwise                            = let (b0:b1:b2:b3:b4:b5:b6:b7:[]) = s
-                                                        in bit 0 b0 . bit 1 b1 . bit 2 b2 . bit 3 b3
-                                                           . bit 4 b4 . bit 5 b5 . bit 6 b6 . bit 7 b7 $ zeroBits
-    where bit :: Int -> Char -> Word8 -> Word8
-          bit n '1' = flip setBit n
-          bit _ '0' = id
-          bit _  b  = error $ "bit must be 0 or 1; " ++ b:" given."
+  fromString s | length s /= 8      = error $ "cannot create Word8 from " ++ s ++ "; must be 8 bits"
+               | not . isBinary $ s = error $ "cannot create Word8 from " ++ s ++ "; elements must be 0 or 1"
+               | otherwise          = let (b0:b1:b2:b3:b4:b5:b6:b7:[]) = s
+                                      in bit 0 b0 . bit 1 b1 . bit 2 b2 . bit 3 b3
+                                         . bit 4 b4 . bit 5 b5 . bit 6 b6 . bit 7 b7 $ zeroBits
 
-w :: String -> Word8
-w = fromString
+instance {-# OVERLAPS #-} IsString [Word8] where
+  fromString = fromString' . filter (/= ' ')
+    where fromString' :: String -> [Word8]
+          fromString' s | (length s `mod` 8) /= 0     = error $ "cannot create [Word8] from " ++ s ++ "; must be multiple of 8 bits"
+                        | not . isBinary $ s = error $ "cannot create [Word8] from " ++ s ++ "; elements must be 0 or 1"
+                        | otherwise          = go s
+        
+          go :: String -> [Word8]
+          go [] = []
+          go (b0:b1:b2:b3:b4:b5:b6:b7:rest) = let word = bit 0 b0 . bit 1 b1 . bit 2 b2 . bit 3 b3
+                                                         . bit 4 b4 . bit 5 b5 . bit 6 b6 . bit 7 b7 $ zeroBits
+                                              in word : go rest
+          go s = error $ "cannot creates [Word8] from " ++ s ++ "; must be multiple of 8 chars."
 
 instance IsString (Stream [] a) where
   fromString = fromString' . filter (/= ' ')
     where fromString' :: String -> Stream [] a
-          fromString' s | not . all (flip elem ['0', '1']) $ s = error $ "cannot create List Stream from " ++ s ++ "; elements must be 0 or 1"
-                        | otherwise                            = let (ws, buff) = go s in S ws buff (length s)
+          fromString' s | not . isBinary $ s = error $ "cannot create List Stream from " ++ s ++ "; elements must be 0 or 1"
+                        | otherwise          = let (ws, buff) = go s in S ws buff (length s)
           go :: String -> ([Word8], Buff)
           go s = let l = 8 * (length s `div` 8) in
-                   (go' $ take l s, b $ drop l s)
-          go' :: String -> [Word8]
-          go' [] = []
-          go' (b0:b1:b2:b3:b4:b5:b6:b7:rest) = let word = bit 0 b0 . bit 1 b1 . bit 2 b2 . bit 3 b3
-                                                          . bit 4 b4 . bit 5 b5 . bit 6 b6 . bit 7 b7 $ zeroBits
-                                               in word : go' rest
-          go' s = error $ "cannot creates [Word8] from " ++ s ++ "; must be multiple of 8 chars."
-          
-          bit :: Int -> Char -> Word8 -> Word8
-          bit n '1' = flip setBit n
-          bit _ '0' = id
-          bit _  b  = error $ "bit must be 0 or 1; " ++ b:" given."  
+                   (words $ take l s, b $ drop l s)
+
+-- type helper.
+b :: String -> Buff
+b = fromString
+
+w :: String -> Word8
+w = fromString
+
+words :: String -> [Word8]
+words = fromString
 
 ls :: String -> Stream [] Word8
 ls = fromString
+
+
+-- * Specifications
 
 spec_helper :: Spec
 spec_helper = do
@@ -127,8 +144,49 @@ spec_stream = do
         `shouldBe` (S [0b10101010,0b10101101,0b10011010,0b11000001] (Buff (1,0b00000001)) 33)
 
   describe "Bitstream" $ do
+    it "should track location" $ do
+      evalBitstream 0 (loc) `shouldBe` 0
+      evalBitstream 0 (emitBit True >> loc) `shouldBe` 1
+      evalBitstream 0 (emitBit True >> emitBit False >> loc) `shouldBe` 2
+      evalBitstream 0 (emitBit True >> alignWord8 >> loc) `shouldBe` 8
+
     it "should produce word aligned results" $ do
       execBitstream 0 (pure ()) `shouldBe` []
       execBitstream 0 (emitBit False) `shouldBe` [0b00000000]
       execBitstream 0 (emitBit True) `shouldBe`  [0b00000001]
       execBitstream 0 (emitBit True >> emitBit False >> emitBit True) `shouldBe` [0b00000101]
+
+    it "should produce the proper darwin header" $ do
+      execBitstream 0 (withHeader True (pure ())) `shouldBe`
+        [ 0xde, 0xc0, 0x17, 0x0b -- 0x0b17c0de header
+        , 0x00, 0x00, 0x00, 0x00 -- version: 0
+        , 0x14, 0x00, 0x00, 0x00 -- offset: 20
+        , 0x04, 0x00, 0x00, 0x00 -- body length: 4 (llvmheader)
+        , 0x07, 0x00, 0x00, 0x01 -- cpu type: ABI64 | X86
+        , 0x42, 0x43, 0xc0, 0xde -- LLVM header. "BC" 0x0de
+        ]
+    it "should be able to emit a fixed number of bits" $ do
+      execBitstream 0 (emitFixed 6 0) `shouldBe` [0x00]
+      execBitstream 0 (emitFixed 6 1) `shouldBe` (words "10000000")
+      execBitstream 0 (emitFixed 6 2) `shouldBe` (words "01000000")
+      execBitstream 0 (emitFixed 6 1 >> emitFixed 6 2)
+        `shouldBe` (words "100000 010000 0000")
+      
+    it "should be able to emit a variable number of bits" $ do
+      execBitstream 0 (emitVBR 3 1) `shouldBe` (words "10000000")
+      execBitstream 0 (emitVBR 3 2) `shouldBe` (words "01000000")
+      execBitstream 0 (emitVBR 3 3) `shouldBe` (words "11000000")
+      execBitstream 0 (emitVBR 3 4) `shouldBe` (words "00110000")
+      execBitstream 0 (emitVBR 3 5) `shouldBe` (words "10110000")
+      -- execBitstream 0 (emitVBR 3 9) `shouldBe` (words "10101000")
+      execBitstream 0 (emitVBR 4  0) `shouldBe` (words "00000000")
+      execBitstream 0 (emitVBR 4  1) `shouldBe` (words "10000000")
+      execBitstream 0 (emitVBR 4  2) `shouldBe` (words "01000000")
+      execBitstream 0 (emitVBR 4  4) `shouldBe` (words "00100000")
+      execBitstream 0 (emitVBR 4  8) `shouldBe` (words "00011000")
+      execBitstream 0 (emitVBR 4 16) `shouldBe` (words "00010100")
+      execBitstream 0 (emitVBR 4 32) `shouldBe` (words "00010010")
+      execBitstream 0 (emitVBR 4 64) `shouldBe` (words "00010001 10000000")
+
+    xit "should be able to emit char6 encoded data" $ do
+      True `shouldBe` False
