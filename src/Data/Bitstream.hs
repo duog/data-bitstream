@@ -12,18 +12,48 @@ import Data.Monoid ((<>))
 import Control.Applicative (liftA2)
 import Control.Monad.Fix
 
+-- | The position in the stream. 
 type Position = Int
-newtype Buff = Buff (Int, Word8) deriving (Eq, Ord)
 
+-- | A @Word8@ buffer, tracking the number of bits.
+newtype Buff = Buff (Int, Word8) deriving (Eq, Ord)
 
 nullBuff :: Buff
 nullBuff = Buff (0,0)
 
+-- | Adding two buffers. E.g. copying over the bits from one buffer into the
+-- other. If we complete a @Word8@, this will be in the first position of the
+-- result.
+--
+-- The bitcode stream will look like
+--
+-- 0      8 9     16 17    32
+-- |      | |      | |      |
+-- 10101111 00001100 10101010
+--
+-- The on disk representation will however look like
+--
+-- 11110101 00110000 01010101
+-- |      | |      | |      |
+-- 8      0 16     9 32    17
+--
+-- Thus, to now have to rearange the bits before writing to disk, we will
+-- encode them in disk order (as opposed to stream order) from the start.
+--
+-- Assume we have two buffers (1, 0b00000001) and (1, 0b00000001), we expect
+-- to obtain (2, 0b00000011). Thus we want to shift the second buffer by the
+-- length of the first, and or them.
+--
+-- In the spill case (5, 0b00010101) and (4, 0b00001111) we expect to get
+-- (Just 0b11110101, (1, b000000001)) 
+--
 addBuff :: Buff -> Buff -> (Maybe Word8, Buff)
 addBuff (Buff (n,w)) (Buff (n',w')) | n+n' < 8  = (Nothing
-                                                  , Buff (n+n', w .|. (shift w' (-n))))
-                                    | otherwise = (Just (w .|. (shift w' (-n)))
-                                                  , Buff ((n+n') `mod` 8, shift w' (8-n)))
+                                                  , Buff (n+n', w .|. (shift w' n)))
+                                    | otherwise = (Just (w .|. (shift w' n))
+                                                  , Buff ((n+n') `mod` 8, shift w' (n-8)))
+
+-- | A stream is a number of Words, a buffer and a position (length of the stream) marker.
 data Stream f a = S
   { words  :: f Word8
   , buffer :: Buff
@@ -55,7 +85,7 @@ instance ( Monoid (f Word8)
                                    (Nothing,   b'') -> S (w <> w'')              b'' (p+p')
       where go :: (Monoid (t Word8), Applicative t, Foldable t)
                => Int -> (t Word8, Word8) -> Word8 -> (t Word8, Word8)
-            go n (acc, b) b' = (acc <> pure (b .|. shift b' (-n)), shift b' (8-n))
+            go n (acc, b) b' = (acc <> pure (b .|. shift b' n), shift b' (n-8))
 
 -- mappend is not cheap here.
 type ListStream = Stream [] Word8
@@ -102,7 +132,7 @@ loc :: Bitstream Position
 loc = Bitstream $ \pos -> (S mempty nullBuff pos, pos)
 
 emitBit :: Bool -> Bitstream ()
-emitBit True  = Bitstream $ \pos -> (S mempty (Buff (1, 0b10000000)) 1, ())
+emitBit True  = Bitstream $ \pos -> (S mempty (Buff (1, 0b00000001)) 1, ())
 emitBit False = Bitstream $ \pos -> (S mempty (Buff (1, 0b00000000)) 1, ())
 
 emitBits :: Int -> Word8 -> Bitstream ()
