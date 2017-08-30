@@ -70,9 +70,9 @@ nullBuff = Buff (0,0)
 -- to obtain (2, 0b00000011). Thus we want to shift the second buffer by the
 -- length of the first, and or them.
 --
--- In the spill case (5, 0b00010101) and (4, 0b00001111) we expect to get
+-- In the spill case B = (5, 0b00010101) and C = (4, 0b00001111) we expect to get
 -- (Just 0b11110101, (1, b000000001))
---
+--         CCCBBBBB               C
 addBuff :: Buff -> Buff -> (Maybe Word8, Buff)
 addBuff (Buff (n,w)) (Buff (n',w')) | n+n' < 8  = (Nothing
                                                   , Buff (n+n', w .|. (shift w' n)))
