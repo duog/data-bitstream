@@ -1,6 +1,23 @@
 {-# OPTIONS_GHC -fprof-auto #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving, StandaloneDeriving, KindSignatures, BinaryLiterals, RecursiveDo, LambdaCase #-}
-module Data.Bitstream where
+module Data.Bitstream
+  ( Buff, nullBuff, addBuff, mkBuff
+  , Bitstream, execBitstream, evalBitstream, runBitstream
+  -- * Monadic interface
+  , withOffset
+  -- ** locations
+  , loc, locBytes, locWords
+  -- ** Bits
+  , emitBit, emitBits
+  -- ** Words
+  , emitWord8, emitWord32R, emitWord32
+  -- ** Others
+  , emitFixed, emitVBR, emitChar6
+  -- ** alignment
+  , alignWord8, alignWord32
+  -- ** writing
+  , writeFile, withHeader
+  ) where
 
 import Prelude hiding (last, words, writeFile, tail)
 
@@ -11,10 +28,7 @@ import qualified Data.List as L
 import qualified Data.ByteString as B
 
 import Data.Monoid ((<>))
-import Control.Applicative (liftA2)
 import Control.Monad.Fix
-
-import Debug.Trace
 
 import GHC.Stack (HasCallStack)
 
