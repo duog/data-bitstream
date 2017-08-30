@@ -306,13 +306,13 @@ main = do
     [ bgroup "synthetic"
       -- this will produce quadratic data.
       -- 1 11 111 1111 1111'1 1111'11 1111'111 1111'1111 ...
-      [ bench (show i) $ nf (execBitstream 0 . repBs) i | i <- [50,100..200] ]
-    , bgroup "real world"
-      [ bench "Main" $ nfIO (writeModule "Main-bench.bc" bc)
-      --  , bench "HelloWorld2" $ nfIO (writeModule "HelloWorld2.bc" =<< readModule "bench/data/HelloWorld2.mod")
-      ]
-    , bgroup "flip bytes"
-      [ bench (show ((2^i)/1024/1024) ++ "M") $ nf flipByteBs (2^i) | i <- [19..25]] -- 5k to 32M
-    , bgroup "flip bytes2"
-      [ bench (show ((2^i)/1024/1024) ++ "M") $ nf flipByte2Bs (2^i) | i <- [19..25]]
+      [ bench (show i) $ nf (execBitstream 0 . repBs) i | i <- [200] ]
+    -- , bgroup "real world"
+    --   [ bench "Main" $ nfIO (writeModule "Main-bench.bc" bc)
+    --   --  , bench "HelloWorld2" $ nfIO (writeModule "HelloWorld2.bc" =<< readModule "bench/data/HelloWorld2.mod")
+    --   ]
+    -- , bgroup "flip bytes"
+    --   [ bench (show ((2^i)/1024/1024) ++ "M") $ nf flipByteBs (2^i) | i <- [19..25]] -- 5k to 32M
+    -- , bgroup "flip bytes2"
+    --   [ bench (show ((2^i)/1024/1024) ++ "M") $ nf flipByte2Bs (2^i) | i <- [19..25]]
     ]
