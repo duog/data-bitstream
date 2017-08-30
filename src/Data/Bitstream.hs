@@ -95,8 +95,8 @@ data Stream f a = S
 deriving instance Eq (f Word8) => Eq (Stream f a)
 deriving instance Ord (f Word8) => Ord (Stream f a)
 
-class Last (f :: * -> *) where last :: f a -> a
-instance Last [] where last = L.last
+-- class Last (f :: * -> *) where last :: f a -> a
+-- instance Last [] where last = L.last
 
 instance ( Monoid (f Word8)
          , Foldable f
