@@ -34,7 +34,7 @@ import Control.Monad.Fix
 
 import GHC.Stack (HasCallStack)
 
--- | The position in the stream. 
+-- | The position in the stream.
 type Position = Int
 
 -- | A @Word8@ buffer, tracking the number of bits.
@@ -71,7 +71,7 @@ nullBuff = Buff (0,0)
 -- length of the first, and or them.
 --
 -- In the spill case (5, 0b00010101) and (4, 0b00001111) we expect to get
--- (Just 0b11110101, (1, b000000001)) 
+-- (Just 0b11110101, (1, b000000001))
 --
 addBuff :: Buff -> Buff -> (Maybe Word8, Buff)
 addBuff (Buff (n,w)) (Buff (n',w')) | n+n' < 8  = (Nothing
@@ -127,7 +127,7 @@ instance ( Monoid (f Word8)
                 -> Word8  -- ^ input
                 -> ( Word8   -- ^ new buff
                    , Word8 ) -- ^ output
-            go' n b w = (shift w (n-8), b .|. shift w n) 
+            go' n b w = (shift w (n-8), b .|. shift w n)
 
 -- mappend is not cheap here.
 type ListStream = Stream [] Word8
@@ -289,7 +289,7 @@ alignWord32 = flip mod 32 <$> loc >>= \case
 writeFile
   :: HasCallStack
   => FilePath -> Bitstream a -> IO ()
-writeFile f = B.writeFile f . B.pack . execBitstream 0 
+writeFile f = B.writeFile f . B.pack . execBitstream 0
 
 -- * BitCode Header
 -- | put the BitCodeHeader, on darwin a special wrapper is
@@ -350,4 +350,3 @@ instance (Functor f, Foldable f) => Show (Stream f a) where
     where showWord8' w = map f $ [testBit w i | i <- [0..7]]
           f True = '1'
           f False = '0'
-
