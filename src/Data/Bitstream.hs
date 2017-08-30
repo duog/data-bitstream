@@ -26,6 +26,7 @@ import Prelude hiding (last, words, writeFile, tail)
 import Data.Word
 import Data.Bits
 import Data.Foldable
+import Control.Monad.Trans.State.Strict
 
 import qualified Data.List as L
 import qualified Data.ByteString as B
@@ -161,7 +162,8 @@ runStreams (Streams ss _) = foldl' mappend mempty ss
 
 
 
-newtype Bitstream a = Bitstream { unBitstream :: Position -> (SeqStream, Position, a) }
+newtype Bitstream a = Bitstream { unBitstream :: State (SeqStreams, Position) a }
+  deriving (Functor, Applicative, Monad, MonadFix)
 
 stream :: (ListStream, Position, a) -> ListStream
 stream (s,_,_) = s
@@ -171,86 +173,94 @@ value :: (ListStream, Position, a) -> a
 value (_,_,v) = v
 
 runBitstream :: Position -> Bitstream a -> (ListStream, Position, a)
-runBitstream p (Bitstream f) = case f p of (ss, p, a) -> (toListStream . runStreams $ ss, p, a)
+runBitstream p (Bitstream f) = case runState f (mempty, 0) of (a, (ss, p)) -> (toListStream . runStreams $ ss, p, a)
 execBitstream :: Position -> Bitstream a -> [Word8]
 execBitstream p a = _words . stream . runBitstream p $ a >> alignWord8
 evalBitstream :: Position -> Bitstream a -> a
 evalBitstream p = value . runBitstream p
 
+streams :: Foldable f => f Word8 -> Buff -> Position -> SeqStreams
+streams w b p = Streams (pure $ S (Seq.fromList . toList $ w) b p) p
+
+bitstream :: (Position -> (SeqStreams, Position, a)) -> Bitstream a
+bitstream f = Bitstream $ state $ \(ss, p) ->
+  let (ss', p', a) = f p
+  in (a, (ss <> ss', p'))
+
 -- Monadic Bitstream API
 
 withOffset :: Int -> Bitstream a -> Bitstream a
-withOffset n x = Bitstream $ \pos -> let
-  (s, pos', r) = unBitstream x n
-  in (s, pos+pos', r)
+withOffset n x = Bitstream $ do
+  (ss, pos) <- get
+  let (r, (ss', pos')) = runState (unBitstream x) (ss, n)
+  put (ss', pos + pos')
+  return r
 
 loc :: Bitstream Position
-loc = Bitstream $ \pos -> (mempty, pos, pos)
+loc = bitstream $ \pos -> (mempty, pos, pos)
 
 locBytes :: Bitstream Word32
-locBytes = Bitstream $ \pos -> (mempty, pos, fromIntegral $ pos `div` 8)
+locBytes = bitstream $ \pos -> (mempty, pos, fromIntegral $ pos `div` 8)
 
 locWords :: Bitstream Word32
-locWords = Bitstream $ \pos -> (mempty, pos, fromIntegral $ pos `div` 32)
+locWords = bitstream $ \pos -> (mempty, pos, fromIntegral $ pos `div` 32)
 
 emitBit :: Bool -> Bitstream ()
-emitBit True  = Bitstream $ \pos -> (streams [] (Buff (1, 0b00000001)) 1, pos+1, ())
-emitBit False = Bitstream $ \pos -> (streams [] (Buff (1, 0b00000000)) 1, pos+1, ())
+emitBit True  = bitstream $ \pos -> (streams [] (Buff (1, 0b00000001)) 1, pos+1, ())
+emitBit False = bitstream $ \pos -> (streams [] (Buff (1, 0b00000000)) 1, pos+1, ())
 
 emitBits :: Int -> Word8 -> Bitstream ()
 emitBits 0 _ = pure ()
-emitBits n b | n < 8 = Bitstream $ \pos -> (streams [] (mkBuff n b) n, pos+n, ())
+emitBits n b | n < 8 = bitstream $ \pos -> (streams [] (mkBuff n b) n, pos+n, ())
              | otherwise = error $ "cannot emit " ++ show n ++ " bits from Word8."
 
 emitWord8 :: Word8 -> Bitstream ()
-emitWord8 w = Bitstream $ \pos -> (streams [w] nullBuff 8, pos+8, ())
+emitWord8 w = bitstream $ \pos -> (streams [w] nullBuff 8, pos+8, ())
 
 emitWord32R :: Word32 -> Bitstream ()
-emitWord32R w = Bitstream $ \pos -> (streams [fromIntegral (shift w (-24))
+emitWord32R w = bitstream $ \pos -> (streams [fromIntegral (shift w (-24))
                                        ,fromIntegral (shift w (-16))
                                        ,fromIntegral (shift w  (-8))
                                        ,fromIntegral w] nullBuff 32, pos+32, ())
 emitWord32 :: Word32 -> Bitstream ()
-emitWord32 w = Bitstream $ \pos -> (streams [fromIntegral (shift w  (-0))
+emitWord32 w = bitstream $ \pos -> (streams [fromIntegral (shift w  (-0))
                                       ,fromIntegral (shift w  (-8))
                                       ,fromIntegral (shift w (-16))
                                       ,fromIntegral (shift w (-24))] nullBuff 32, pos+32, ())
 
-streams :: Foldable f => f Word8 -> Buff -> Position -> SeqStreams
-streams w b p = Streams (pure $ S (Seq.fromList . toList $ w) b p) p
 
 emitFixed :: Word64 -> Word64 -> Bitstream ()
 emitFixed 0 _ = pure ()
-emitFixed n w | n < 8  = Bitstream $ \pos -> (streams []     (mkBuff  n'     (off  0 w)) n', pos+n', ())
-              | n < 16 = Bitstream $ \pos -> (streams [off  0 w] (mkBuff (n'-8)  (off  8 w)) n', pos+n', ())
-              | n < 24 = Bitstream $ \pos -> (streams [off  0 w
+emitFixed n w | n < 8  = bitstream $ \pos -> (streams []     (mkBuff  n'     (off  0 w)) n', pos+n', ())
+              | n < 16 = bitstream $ \pos -> (streams [off  0 w] (mkBuff (n'-8)  (off  8 w)) n', pos+n', ())
+              | n < 24 = bitstream $ \pos -> (streams [off  0 w
                                                 ,off  8 w] (mkBuff (n'-16) (off 16 w)) n', pos+n', ())
-              | n < 32 = Bitstream $ \pos -> (streams [off  0 w
+              | n < 32 = bitstream $ \pos -> (streams [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w] (mkBuff (n'-24) (off 24 w)) n', pos+n', ())
-              | n < 40 = Bitstream $ \pos -> (streams [off  0 w
+              | n < 40 = bitstream $ \pos -> (streams [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w
                                                 ,off 24 w] (mkBuff (n'-32) (off 32 w)) n', pos+n', ())
-              | n < 48 = Bitstream $ \pos -> (streams [off  0 w
+              | n < 48 = bitstream $ \pos -> (streams [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w
                                                 ,off 24 w
                                                 ,off 32 w] (mkBuff (n'-40) (off 40 w)) n', pos+n', ())
-              | n < 56 = Bitstream $ \pos -> (streams [off  0 w
+              | n < 56 = bitstream $ \pos -> (streams [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w
                                                 ,off 24 w
                                                 ,off 32 w
                                                 ,off 40 w] (mkBuff (n'-48) (off 48 w)) n', pos+n', ())
-              | n < 64 = Bitstream $ \pos -> (streams [off  0 w
+              | n < 64 = bitstream $ \pos -> (streams [off  0 w
                                                 ,off  8 w
                                                 ,off 16 w
                                                 ,off 24 w
                                                 ,off 32 w
                                                 ,off 40 w
                                                 ,off 48 w] (mkBuff (n'-56) (off 56 w)) n', pos+n', ())
-              | n == 64 = Bitstream $ \pos -> (streams [ off  0 w, off  8 w, off 16 w, off 24 w
+              | n == 64 = bitstream $ \pos -> (streams [ off  0 w, off  8 w, off 16 w, off 24 w
                                                  , off 32 w, off 40 w, off 48 w, off 56 w]
                                                nullBuff
                                                64, pos+n', ())
