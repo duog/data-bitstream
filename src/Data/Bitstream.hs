@@ -185,7 +185,8 @@ streams w b p = Streams (pure $ S (Seq.fromList . toList $ w) b p) p
 bitstream :: (Position -> (SeqStreams, Position, a)) -> Bitstream a
 bitstream f = Bitstream $ state $ \(ss, p) ->
   let (ss', p', a) = f p
-  in (a, (ss <> ss', p'))
+      !ss'' = ss <> ss'
+  in (a, (ss'', p'))
 
 -- Monadic Bitstream API
 
