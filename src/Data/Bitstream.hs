@@ -17,6 +17,8 @@ module Data.Bitstream
   , alignWord8, alignWord32
   -- ** writing
   , writeFile, withHeader
+  -- ** For testing
+  , Stream(..), Buff(..), Bitstream(..)
   ) where
 
 import Prelude hiding (last, words, writeFile, tail)
@@ -98,6 +100,7 @@ instance Last [] where last = L.last
 
 instance ( Monoid (f Word8)
          , Foldable f
+         , Traversable f
          , Applicative f) => Monoid (Stream f a) where
   mempty = S mempty nullBuff 0
   lhs `mappend` (S _ _ 0) = lhs
@@ -111,13 +114,20 @@ instance ( Monoid (f Word8)
     Buff (n,c) | null w' -> case addBuff b b' of
                                (Just w'', b'') -> S (w <> pure w'') b'' (p+p')
                                (Nothing,  b'') -> S w b'' (p+p')
-               | otherwise -> let (w'', l) = foldl (go n) (mempty, c) w'
+               | otherwise -> let (l, w'') = L.mapAccumL (go' n) c w'
                               in case addBuff (Buff (n, l)) b' of
                                    (Just w''', b'') -> S (w <> w'' <> pure w''') b'' (p+p')
                                    (Nothing,   b'') -> S (w <> w'')              b'' (p+p')
       where go :: (Monoid (t Word8), Applicative t, Foldable t)
                => Int -> (t Word8, Word8) -> Word8 -> (t Word8, Word8)
             go n (acc, b) b' = (acc <> pure (b .|. shift b' n), shift b' (n-8))
+
+            go' :: Int    -- ^ shift
+                -> Word8  -- ^ buff
+                -> Word8  -- ^ input
+                -> ( Word8   -- ^ new buff
+                   , Word8 ) -- ^ output
+            go' n b w = (shift w (n-8), b .|. shift w n) 
 
 -- mappend is not cheap here.
 type ListStream = Stream [] Word8
