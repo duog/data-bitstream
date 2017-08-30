@@ -120,10 +120,10 @@ instance ( Monoid (f Word8)
                               in case addBuff (Buff (n, l)) b' of
                                    (Just w''', b'') -> S (w <> w'' <> pure w''') b'' (p+p')
                                    (Nothing,   b'') -> S (w <> w'')              b'' (p+p')
-      where go :: (Monoid (t Word8), Applicative t, Foldable t)
+      where {- go :: (Monoid (t Word8), Applicative t, Foldable t)
                => Int -> (t Word8, Word8) -> Word8 -> (t Word8, Word8)
             go n (acc, b) b' = (acc <> pure (b .|. shift b' n), shift b' (n-8))
-
+            -}
             go' :: Int    -- ^ shift
                 -> Word8  -- ^ buff
                 -> Word8  -- ^ input
