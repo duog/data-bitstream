@@ -53,7 +53,7 @@ test-suite spec
                      , data-bitcode-llvm
   default-language:  Haskell2010
 
-benchmark bistream
+benchmark bitstream
   type: exitcode-stdio-1.0
   main-is: Bench.hs
   hs-source-dirs:
