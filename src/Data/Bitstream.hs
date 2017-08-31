@@ -144,11 +144,16 @@ instance ( Monoid (f Word8)
                     go' !n !b !w = (shift w (n-8), b .|. shift w n)
     in r
 
+  {-# SPECIALIZE instance Monoid (Stream Seq a) #-}
+  {-# SPECIALIZE instance Monoid (Stream [] a) #-}
+
 instance Monoid (Streams f a) where
   mempty = Streams mempty 0
   lhs `mappend` (Streams _ 0) = lhs
   (Streams _ 0) `mappend` rhs = rhs
   (Streams ss1 p1) `mappend` (Streams ss2 p2) = Streams (ss1 <> ss2) (p1 + p2)
+  {-# SPECIALIZE instance Monoid (Streams Seq a) #-}
+  {-# SPECIALIZE instance Monoid (Streams [] a) #-}
 
 -- mappend is not cheap here.
 type ListStream = Stream [] Word8
@@ -157,15 +162,19 @@ type SeqStreams = Streams Seq  Word8
 toListStream :: Foldable f => Stream f a -> Stream [] a
 toListStream (S w b p) = S (toList w) b p
 
+{-# SPECIALIZE toListStream :: Stream Seq a -> Stream [] a #-}
+
 runStreams :: (Monoid (Stream f a)) => Streams f a -> Stream f a
 runStreams (Streams ss _) = foldl' mappend mempty ss
 -- class Last (f :: * -> *) where last :: f a -> a
 -- instance Last [] where last = L.last
 
+{-# SPECIALIZE runStreams :: Streams Seq a -> Stream Seq a #-}
 
 data BitstreamState = BitstreamState !SeqStreams !Position
 
 bssPosition (BitstreamState _ p) = p
+
 newtype Bitstream a = Bitstream { unBitstream :: State BitstreamState a }
   deriving (Functor, Applicative, Monad, MonadFix)
 
@@ -188,9 +197,11 @@ streams w b p
   | p == 0 = mempty
   | otherwise = Streams (pure $ S (Seq.fromList . toList $ w) b p) p
 
+{-# SPECIALIZE streams :: [Word8] -> Buff -> Position -> SeqStreams #-}
 bitstream :: Foldable f => f Word8 -> Buff -> Int -> Bitstream ()
 bitstream w b p = Bitstream $ modify' $ \(BitstreamState ss p') -> BitstreamState (ss <> streams w b p) (p + p')
 
+{-# SPECIALIZE bitstream :: [Word8] -> Buff -> Int -> Bitstream () #-}
 -- Monadic Bitstream API
 
 withOffset :: Int -> Bitstream a -> Bitstream a
