@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -fprof-auto  -ddump-simpl -ddump-to-file #-}
+{-# OPTIONS_GHC -fprof-auto #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving, StandaloneDeriving, KindSignatures, BinaryLiterals, RecursiveDo, LambdaCase, RankNTypes, FlexibleContexts, BangPatterns #-}
 module Data.Bitstream
   ( Buff, nullBuff, addBuff, mkBuff
@@ -76,7 +76,7 @@ nullBuff = Buff 0 0
 --
 -- In the spill case B = (5, 0b00010101) and C = (4, 0b00001111) we expect to get
 -- (Just 0b11110101, (1, b000000001))
---         CCCBBBBB               C
+--
 addBuff :: Buff -> Buff -> (Maybe Word8, Buff)
 addBuff (Buff n w ) (Buff n' w' ) | n+n' < 8  = (Nothing
                                                   , Buff (n+n') (w .|. (shift w' n)))
@@ -98,9 +98,6 @@ data Stream f a = S
 
 deriving instance Eq (f Word8) => Eq (Stream f a)
 deriving instance Ord (f Word8) => Ord (Stream f a)
-
--- class Last (f :: * -> *) where last :: f a -> a
--- instance Last [] where last = L.last
 
 data Streams f a = Streams
   { _substreams :: !(Seq (Stream f a))
@@ -132,11 +129,7 @@ instance ( Monoid (f Word8)
                                     in case addBuff (Buff n l) b' of
                                         (Just w''', b'') -> S (w <> w'' <> pure w''') b'' (p + p')
                                         (Nothing,   b'') -> S (w <> w'') b'' (p + p')
-              where {- go :: (Monoid (t Word8), Applicative t, Foldable t)
-                      => Int -> (t Word8, Word8) -> Word8 -> (t Word8, Word8)
-                    go n (acc, b) b' = (acc <> pure (b .|. shift b' n), shift b' (n-8))
-                    -}
-                    go' :: Int    -- ^ shift
+              where go' :: Int    -- ^ shift
                         -> Word8  -- ^ buff
                         -> Word8  -- ^ input
                         -> ( Word8   -- ^ new buff
@@ -166,8 +159,6 @@ toListStream (S w b p) = S (toList w) b p
 
 runStreams :: (Monoid (Stream f a)) => Streams f a -> Stream f a
 runStreams (Streams ss _) = foldl' mappend mempty ss
--- class Last (f :: * -> *) where last :: f a -> a
--- instance Last [] where last = L.last
 
 {-# SPECIALIZE runStreams :: Streams Seq a -> Stream Seq a #-}
 
