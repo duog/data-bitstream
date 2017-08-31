@@ -198,7 +198,7 @@ bitstream w b p = Bitstream $ modify' $ \(BitstreamState ss p') -> BitstreamStat
 withOffset :: Int -> Bitstream a -> Bitstream a
 withOffset n x = Bitstream $ do
   bss@(BitstreamState ss pos) <- get
-  let (r, BitstreamState ss' pos') = runState (unBitstream x) bss
+  let (r, BitstreamState ss' pos') = runState (unBitstream x) (BitstreamState ss n)
   put $ BitstreamState ss' (pos + pos')
   return r
 
