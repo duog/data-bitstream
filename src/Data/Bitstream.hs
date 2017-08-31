@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -fprof-auto #-}
+{-# OPTIONS_GHC -fprof-auto  -ddump-simpl -ddump-to-file #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving, StandaloneDeriving, KindSignatures, BinaryLiterals, RecursiveDo, LambdaCase, RankNTypes, FlexibleContexts, BangPatterns #-}
 module Data.Bitstream
   ( Buff, nullBuff, addBuff, mkBuff
@@ -41,14 +41,15 @@ import GHC.Stack (HasCallStack)
 type Position = Int
 
 -- | A @Word8@ buffer, tracking the number of bits.
-newtype Buff = Buff (Int, Word8) deriving (Eq, Ord)
+-- I don't think those Unpacks are necessary, -funbox-small-strict-fields is on by default
+data Buff = Buff !Int !Word8 deriving (Eq, Ord)
 
 mask :: (FiniteBits a, Num a) => Int -> a -> a
 mask n w = m .&. w
   where m = setBit zeroBits (n+1) - 1
 
 nullBuff :: Buff
-nullBuff = Buff (0,0)
+nullBuff = Buff 0 0
 
 -- | Adding two buffers. E.g. copying over the bits from one buffer into the
 -- other. If we complete a @Word8@, this will be in the first position of the
@@ -77,22 +78,22 @@ nullBuff = Buff (0,0)
 -- (Just 0b11110101, (1, b000000001))
 --         CCCBBBBB               C
 addBuff :: Buff -> Buff -> (Maybe Word8, Buff)
-addBuff (Buff (n,w)) (Buff (n',w')) | n+n' < 8  = (Nothing
-                                                  , Buff (n+n', w .|. (shift w' n)))
-                                    | otherwise = (Just (w .|. (shift w' n))
-                                                  , Buff ((n+n') `mod` 8, shift w' (n-8)))
+addBuff (Buff n w ) (Buff n' w' ) | n+n' < 8  = (Nothing
+                                                  , Buff (n+n') (w .|. (shift w' n)))
+                                  | otherwise = (Just (w .|. (shift w' n))
+                                                  , Buff ((n+n') `mod` 8) (shift w' (n-8)))
 
 
 -- | Smart constructor for @Buff@. Ensures that
 -- the stored byte is masked properly.
 mkBuff :: Int -> Word8 -> Buff
-mkBuff n w = Buff (n, mask n w)
+mkBuff n w = Buff n (mask n w)
 
 -- | A stream is a number of Words, a buffer and a position (length of the stream) marker.
 data Stream f a = S
-  { _words  :: f Word8
-  , _buffer :: Buff
-  , _len    :: Position
+  { _words  :: !(f Word8)
+  , _buffer :: !Buff
+  , _len    :: !Position
   }
 
 deriving instance Eq (f Word8) => Eq (Stream f a)
@@ -102,8 +103,8 @@ deriving instance Ord (f Word8) => Ord (Stream f a)
 -- instance Last [] where last = L.last
 
 data Streams f a = Streams
-  { _substreams :: Seq (Stream f a)
-  , _total_len :: Position
+  { _substreams :: !(Seq (Stream f a))
+  , _total_len :: !Position
   }
 
 deriving instance Eq (f Word8) => Eq (Streams f a)
@@ -116,38 +117,38 @@ instance ( Monoid (f Word8)
   mempty = S mempty nullBuff 0
   lhs `mappend` (S _ _ 0) = lhs
   (S _ _ 0) `mappend` rhs = rhs
-  (S w b p) `mappend` (S w' b' p') = case b of
+  (S w b p) `mappend` (S w' b' p') =
+    let r =
+          case b of
     -- there are no bits in the buffer. We can simply
     -- concatinate lhs and rhs
-    Buff (0,_) -> S (w <> w') b' (p+p')
-    -- there are already @n@ bites in the buffer. We will
-    -- need to shift all the bits in the RHS left by 8-n.
-    Buff (n,c) | null w' -> case addBuff b b' of
-                               (Just w'', b'') -> S (w <> pure w'') b'' (p+p')
-                               (Nothing,  b'') -> S w b'' (p+p')
-               | otherwise -> let (l, w'') = L.mapAccumL (go' n) c w'
-                                  !(!w'''', !b'') = case addBuff (Buff (n, l)) b' of
-                                       (Just w''', b'') -> (w <> w'' <> pure w''', b'')
-                                       (Nothing,   b'') -> (w <> w'', b'')
-                              in S w'''' b'' (p + p')
-      where {- go :: (Monoid (t Word8), Applicative t, Foldable t)
-               => Int -> (t Word8, Word8) -> Word8 -> (t Word8, Word8)
-            go n (acc, b) b' = (acc <> pure (b .|. shift b' n), shift b' (n-8))
-            -}
-            go' :: Int    -- ^ shift
-                -> Word8  -- ^ buff
-                -> Word8  -- ^ input
-                -> ( Word8   -- ^ new buff
-                   , Word8 ) -- ^ output
-            go' n b w = (shift w (n-8), b .|. shift w n)
+            Buff 0 _ -> S (w <> w') b' (p+p')
+            -- there are already @n@ bites in the buffer. We will
+            -- need to shift all the bits in the RHS left by 8-n.
+            Buff n c | null w' -> case addBuff b b' of
+                                      (Just w'', b'') -> S (w <> pure w'') b'' (p+p')
+                                      (Nothing,  b'') -> S w b'' (p+p')
+                     | otherwise -> let (l, w'') = L.mapAccumL (go' n) c w'
+                                    in case addBuff (Buff n l) b' of
+                                        (Just w''', b'') -> S (w <> w'' <> pure w''') b'' (p + p')
+                                        (Nothing,   b'') -> S (w <> w'') b'' (p + p')
+              where {- go :: (Monoid (t Word8), Applicative t, Foldable t)
+                      => Int -> (t Word8, Word8) -> Word8 -> (t Word8, Word8)
+                    go n (acc, b) b' = (acc <> pure (b .|. shift b' n), shift b' (n-8))
+                    -}
+                    go' :: Int    -- ^ shift
+                        -> Word8  -- ^ buff
+                        -> Word8  -- ^ input
+                        -> ( Word8   -- ^ new buff
+                          , Word8 ) -- ^ output
+                    go' !n !b !w = (shift w (n-8), b .|. shift w n)
+    in r
 
 instance Monoid (Streams f a) where
   mempty = Streams mempty 0
   lhs `mappend` (Streams _ 0) = lhs
   (Streams _ 0) `mappend` rhs = rhs
-  (Streams ss1 p1) `mappend` (Streams ss2 p2) =
-    let !ss = ss1 <> ss2
-    in Streams ss (p1 + p2)
+  (Streams ss1 p1) `mappend` (Streams ss2 p2) = Streams (ss1 <> ss2) (p1 + p2)
 
 -- mappend is not cheap here.
 type ListStream = Stream [] Word8
@@ -162,8 +163,10 @@ runStreams (Streams ss _) = foldl' mappend mempty ss
 -- instance Last [] where last = L.last
 
 
+data BitstreamState = BitstreamState !SeqStreams !Position
 
-newtype Bitstream a = Bitstream { unBitstream :: State (SeqStreams, Position) a }
+bssPosition (BitstreamState _ p) = p
+newtype Bitstream a = Bitstream { unBitstream :: State BitstreamState a }
   deriving (Functor, Applicative, Monad, MonadFix)
 
 stream :: (ListStream, Position, a) -> ListStream
@@ -174,41 +177,41 @@ value :: (ListStream, Position, a) -> a
 value (_,_,v) = v
 
 runBitstream :: Position -> Bitstream a -> (ListStream, Position, a)
-runBitstream p (Bitstream f) = case runState f (mempty, 0) of (a, (ss, p)) -> (toListStream . runStreams $ ss, p, a)
+runBitstream p (Bitstream f) = case runState f (BitstreamState mempty 0) of (a, BitstreamState ss p) -> (toListStream . runStreams $ ss, p, a)
 execBitstream :: Position -> Bitstream a -> [Word8]
 execBitstream p a = _words . stream . runBitstream p $ a >> alignWord8
 evalBitstream :: Position -> Bitstream a -> a
 evalBitstream p = value . runBitstream p
 
 streams :: Foldable f => f Word8 -> Buff -> Position -> SeqStreams
-streams w b p = Streams (pure $ S (Seq.fromList . toList $ w) b p) p
+streams w b p
+  | p == 0 = mempty
+  | otherwise = Streams (pure $ S (Seq.fromList . toList $ w) b p) p
 
 bitstream :: Foldable f => f Word8 -> Buff -> Int -> Bitstream ()
-bitstream w b p = Bitstream $ modify' $ \(ss, p') ->
-  let !ss' = ss <> streams w b p
-  in (ss', p + p')
+bitstream w b p = Bitstream $ modify' $ \(BitstreamState ss p') -> BitstreamState (ss <> streams w b p) (p + p')
 
 -- Monadic Bitstream API
 
 withOffset :: Int -> Bitstream a -> Bitstream a
 withOffset n x = Bitstream $ do
-  (ss, pos) <- get
-  let (r, (ss', pos')) = runState (unBitstream x) (ss, n)
-  put (ss', pos + pos')
+  bss@(BitstreamState ss pos) <- get
+  let (r, BitstreamState ss' pos') = runState (unBitstream x) bss
+  put $ BitstreamState ss' (pos + pos')
   return r
 
 loc :: Bitstream Position
-loc = Bitstream $ gets snd
+loc = Bitstream $ gets bssPosition
 
 locBytes :: Bitstream Word32
-locBytes = Bitstream $ gets $ fromIntegral . (`div` 8) . snd
+locBytes = Bitstream $ gets $ fromIntegral . (`div` 8) . bssPosition
 
 locWords :: Bitstream Word32
-locWords = Bitstream $ gets $ fromIntegral . (`div` 32) . snd
+locWords = Bitstream $ gets $ fromIntegral . (`div` 32) . bssPosition
 
 emitBit :: Bool -> Bitstream ()
-emitBit True  = bitstream [] (Buff (1, 0b00000001)) 1
-emitBit False = bitstream [] (Buff (1, 0b00000000)) 1
+emitBit True  = bitstream [] (Buff 1 0b00000001) 1
+emitBit False = bitstream [] (Buff 1 0b00000000) 1
 
 emitBits :: Int -> Word8 -> Bitstream ()
 emitBits 0 _ = pure ()
@@ -356,10 +359,10 @@ showWord8 w = '0':'b':(map f $ [testBit w i | i <- [0..7]])
         f False = '0'
 
 instance Show Buff where
-  show (Buff (n, w)) = show n ++ " bits: " ++ showWord8 w
+  show (Buff n w) = show n ++ " bits: " ++ showWord8 w
 
 instance (Functor f, Foldable f) => Show (Stream f a) where
-  show (S ws (Buff (n,b)) p) | null ws = show p ++ " bits: " ++ take n (showWord8' b)
+  show (S ws (Buff n b) p) | null ws = show p ++ " bits: " ++ take n (showWord8' b)
                              | otherwise = show p ++ " bits: " ++ foldl1 (\x y -> x ++ " " ++ y) (fmap showWord8' ws) ++ " " ++ take n (showWord8' b)
     where showWord8' w = map f $ [testBit w i | i <- [0..7]]
           f True = '1'
